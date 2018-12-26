@@ -6,7 +6,7 @@ import time as time
 class Node:
     def __init__(self, xy, draw=False):
         self.x, self.y = xy
-        self.r = np.array(xy)
+        self.r = np.asarray(xy)
 
         self.elements = list()
         self.loads = np.array([0, 0])  # self.loads (global Fx, Fy) assigned on loading
@@ -114,18 +114,6 @@ class Quad4(FiniteElement):
         self.plotidx = [0,1,2,3]
         self.r = r
 
-    def _G(self, xi=0, eta=0):
-        return 1/4*np.array([   [eta-1, 1-eta, 1+eta, -1-eta],
-                                [xi-1, -1-xi, 1+xi, 1-xi]])
-
-    def _B(self, xi=0, eta=0):
-        d = derivatives = self.G(xi, eta)
-        # [d/dx d/dy].T @ [N1 N2 N3 N4]
-        B = np.array([[d[0,0], 0, d[0,1], 0, d[0,2], 0, d[0,3], 0],
-                      [0, d[1,0], 0, d[1,1], 0, d[1,2], 0, d[1,3]],
-                      [*d[::-1].T.flatten()]])
-        return B
-
     def shape_functions(self, xi=0, eta=0):
         return 1/4 * np.array([(1-xi)*(1-eta),
                                (1+xi)*(1-eta),
@@ -149,26 +137,6 @@ class Quad8(FiniteElement):
                                (r[1]+r[2])/2,
                                (r[2]+r[3])/2,
                                (r[3]+r[0])/2])
-
-    def _G(self, xi=0, eta=0):
-        return np.array([
-            [-1/4*(eta-1)*(2*xi+eta), -1/4*(eta-1)*(2*xi-eta), 1/4*(eta+1)*(eta+2*xi), 1/4*(eta+1)*(2*xi-eta),
-             xi*(eta-1), 1/2*(1-eta**2), -xi*(eta+1), 1/2*(eta**2-1)],
-            [-1/4*(eta-1)*(2*xi+eta), -1/4*(xi+1)*(xi-2*eta), 1/4*(xi+1)*(xi+2*eta), 1/4*(xi-1)*(xi-2*eta),
-             1/2*(xi**2-1), -eta*(xi+1), 1/2*(1-xi**2), eta*(xi-1) ]])
-
-    def jacobian(self, xi=0, eta=0):
-        return self.G(xi, eta) @ self.r
-
-    def _B(self, xi=0, eta=0):
-        derivatives = np.linalg.solve(self.jacobian(xi,eta), self.G(xi,eta))
-        # [d/dx d/dy].T @ [N1 N2 N3 N4 N5 N6 N7 N8]
-        B = np.array([
-            np.array([np.array([dx, 0]) for dx in derivatives[0]]).flatten(),
-            np.array([np.array([0, dy]) for dy in derivatives[1]]).flatten(),
-            np.array([np.array([dy, dx]) for dy,dx in zip(derivatives[1], derivatives[0])]).flatten()
-        ])
-        return B
 
     def shape_functions(self, xi=0, eta=0):
         # Nodes 1-4 are corner nodes and 5-8 are midside nodes
@@ -304,7 +272,7 @@ if __name__ == '__main__':
     p = Problem()
     x = 10*np.linspace(0,10, 31)
     y = 10*np.linspace(0,2, 7)
-    p.mesh_grid(x, y, cls=Quad4)
+    p.mesh_grid(x, y, cls=Quad8)
     mid_time = time.time()
     p.load_node((100,10), (0,10000))
     p.pin(p.nodeobj_at((0,0)))
