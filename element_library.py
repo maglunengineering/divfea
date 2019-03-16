@@ -64,6 +64,13 @@ class FiniteElement:
         return self.G(xi, eta) @ self.r
 
     def B(self, xi=0, eta=0):
+        dN_dx, dN_dy = np.linalg.inv(self.jacobian(xi, eta)) @ self.G(xi, eta)
+        return np.array((np.array((dN_dx, np.zeros_like(dN_dx))).T.flatten(),
+                         np.array((np.zeros_like(dN_dy), dN_dy)).T.flatten(),
+                         np.array((dN_dy, dN_dx)).T.flatten()
+                         ))
+
+    def __B(self, xi=0, eta=0):
         dN_dxi = (self.shape_functions(xi+0.01, eta) - self.shape_functions(xi-0.01, eta))/0.02
         dN_deta = (self.shape_functions(xi, eta+0.01) - self.shape_functions(xi, eta-0.01))/0.02
         return np.array(( np.array((dN_dxi, np.zeros_like(dN_dxi))).T.flatten(),
@@ -158,6 +165,7 @@ class Problem:
         self.loads = np.array([])
         self.displacements = np.array([])
         self.nodal_coordinates = self.f_nodal_coordinates()
+        self.nc_dict = dict()
 
     def create_element(self, r, cls=Quad8, E=2e5, nu=0.3, thickness=1):
             element = cls(r, E, nu, thickness)
@@ -171,8 +179,9 @@ class Problem:
     def create_node(self, r):
         r = np.asarray(r)
         node = Node(r)
-        if node not in self.nodes:
+        if tuple(r) not in self.nc_dict:
             self.nodes.append(node)
+            self.nc_dict[tuple(r)] = len(self.nodes) - 1
             node.number = len(self.nodes) - 1
             node.dofs = 2*node.number + np.array([0, 1])
             return node
@@ -226,11 +235,7 @@ class Problem:
             node.displacements = self.displacements[node.dofs]
 
     def nodeobj_at(self, r):
-        r = np.asarray(r)
-        for node in self.nodes:
-            if node == Node(r):
-                return node
-        return None
+        return self.nodes[self.nc_dict[tuple(r)]]
 
     def f_nodal_coordinates(self):
         return np.array([node.r for node in self.nodes])
@@ -245,50 +250,66 @@ class Problem:
         plt.autoscale()
         plt.show()
 
-    def plot_displaced(self):
+    def plot_displaced(self, save=False, filename='fig.jpg'):
         fig,ax = plt.subplots()
-        ax.set_xlim(np.min(self.f_nodal_coordinates().T[0]), np.max(self.f_nodal_coordinates().T[0])+20)
-        ax.set_ylim(np.min(self.f_nodal_coordinates().T[1]), np.max(self.f_nodal_coordinates().T[1])+100)
-        elemental_stress = np.array([element.stress_vonmises(0,0) for element in self.elements])
-        maxstress = np.max(elemental_stress)
+        xmin, xmax = np.min(self.f_nodal_coordinates().T[0]), np.max(self.f_nodal_coordinates().T[0])+20
+        ymin, ymax = np.min(self.f_nodal_coordinates().T[1]), np.max(self.f_nodal_coordinates().T[1])+100
+        ax.set_xlim(xmin, xmax)
+        ax.set_ylim(ymin, ymax)
+        elemental_stress = np.array([element.stress(0,0)[0] for element in self.elements])
+        maxstress = np.max(elemental_stress)*1.01
+        ax.text(0.1*xmax, 0.8*ymax, 'Max stress {}'.format(maxstress))
 
         for element in self.elements:
             r = element.r[element.plotidx] + element.displacements()[element.plotidx]
-            polygon = patches.Polygon(r, linewidth=1, facecolor=(np.sqrt(element.stress_vonmises(0,0)/maxstress),
-                                                                 0,
-                                                                 1 - np.sqrt(element.stress_vonmises(0,0)/maxstress)))
+            polygon = patches.Polygon(r, linewidth=1, facecolor=(np.sqrt(np.abs(element.stress(0,0)[0]/maxstress)),
+                                                                 0, 0))
+                                                                 #1 - np.sqrt(element.stress_vonmises(0,0)/maxstress)))
             ax.add_patch(polygon)
-        plt.show()
+        if save:
+            plt.savefig(filename)
+
+        #plt.show()
 
 
 if __name__ == '__main__':
-    start_time = time.time()
 
-    r1 = np.array([[0,0],
-                  [10,0],
-                  [10,10],
-                  [0,10]])
-
-    p = Problem()
-    x = 10*np.linspace(0,10, 31)
-    y = 10*np.linspace(0,2, 7)
-    p.mesh_grid(x, y, cls=Quad8)
-    mid_time = time.time()
-    p.load_node((100,10), (0,10000))
-    p.pin(p.nodeobj_at((0,0)))
-    p.pin(p.nodeobj_at((0,10)))
-    p.pin(p.nodeobj_at((0,20)))
-    q = p.elements[-1]
-    n = p.nodes[-1]
-    p.solve()
-    print(q.displacements())
-    end_time = time.time()
-    p.plot_displaced()
-    q8 = Quad8(r1)
-    q4 = Quad4(r1)
+    for n in (1,2,3,4,5):
+        start_time = time.time()
+        r1 = np.array([[0,0],
+                      [10,0],
+                      [10,10],
+                      [0,10]])
 
 
-    dt = end_time - start_time
-    print('Mesh time', mid_time - start_time)
-    print('Assembly and solution time', end_time - mid_time)
-    print('Total time', dt)
+        p = Problem()
+        #n = 4
+        x = 10*np.linspace(0,10, 10*n+1)
+        y = 10*np.linspace(0,2, 2*n+1)
+        cls = Quad8
+        p.mesh_grid(x, y, cls=cls)
+        mid_time = time.time()
+        p.load_node((100,0), (0,10000))
+        #p.load_node((100,20), (-10000, 0))
+        #p.load_node((100,0), (10000, 0))
+        for _y in y:
+            p.pin(p.nodeobj_at((0,_y)))
+        q = p.elements[-1]
+        n1 = p.nodes[-1]
+        p.solve()
+        print(q.displacements())
+        end_time = time.time()
+
+        q8 = Quad8(r1)
+        q4 = Quad4(r1)
+        e1 = p.nodeobj_at((80, 10)).elements[0]
+        e2 = p.nodeobj_at((10, 20)).elements[0]
+        e3 = p.nodeobj_at((10, 0)).elements[0]
+
+        dt = end_time - start_time
+        print('n = ', n)
+        print('Mesh time', mid_time - start_time)
+        print('Assembly and solution time', end_time - mid_time)
+        print('Total time', dt)
+        filename = '{}_{}_16-03-2019.png'.format(cls.__name__, n)
+        p.plot_displaced(save=True, filename=filename)
