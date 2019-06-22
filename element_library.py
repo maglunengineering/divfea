@@ -533,7 +533,6 @@ class Problem:
         :return:
         """
         fig, axs = self.plot_prep(ncols=len(args))
-        axs = (axs,) if len(args)==1 else axs
         for ax,arg in zip(axs,args):
             arg = (arg, ) if type(arg).__name__ == 'method' else arg  # Make sure arg is iterable
             for func in arg:
@@ -718,8 +717,7 @@ if __name__ == '__main__':
         #p.plot_both(save=False, filename=filename)
         #p.plot_functions(p.plot_model, p.plot_displaced)
         #p.plot()
-        p.animate()
-        plt.show()
+
 
     if lc == 2:
         for n in (2,3,4,5):
