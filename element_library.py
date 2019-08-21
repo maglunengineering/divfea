@@ -1,24 +1,28 @@
+import time
+import itertools
+
 import numpy as np
+import shapely.geometry as shp
+from shapely.ops import triangulate
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import matplotlib.animation as mplanim
 from mpl_toolkits.mplot3d import Axes3D
 import mpl_toolkits.mplot3d as a3
-import time as time
-import timeit
 
+from material_library import *
 
 
 class FiniteElement:
     ndims = 2
-    def __init__(self, E=210000, nu=0.3, thickness=1):
+    midside_nodes = False
+    def __init__(self):
         self.nodes = list()
         self.dofs = None  # Assigned on creation
 
-        self.thickness = thickness
-        self.C = E/(1-nu**2) * np.array([   [1, nu, 0],
-                                            [nu, 1, 0],
-                                            [0, 0, (1-nu)/2]])
+    @property
+    def r(self):
+        return np.asarray([node.r for node in self.nodes])
 
     def stiffness_matrix(self):
         integration_points, weights = self.f_integration_points()
@@ -144,21 +148,39 @@ class FiniteElement:
             E[j, i] = 1
         return E
 
+    def adjacent_elements(self):
+        adjacents = list()
+        for node in self.nodes:
+            for element in node.elements:
+                if element not in adjacents and element != self:
+                    adjacents.append(element)
+        return adjacents
+
     def __eq__(self, other):
         return np.allclose(self.r, other.r)
 
+class FiniteElement2D(FiniteElement):
+    def __init__(self, material, thickness):
+        super().__init__()
+
+        self.thickness = thickness
+        self.material = material
+        self.C = material.StiffnessMatrixPlaneStress()
+
 class FiniteElement3D(FiniteElement):
     ndims = 3
-    def __init__(self, E=210000, nu=0.3):
+    def __init__(self, material):
         self.nodes = list()
         self.dofs = None
 
-        self.C = E/((1+nu)*(1-2*nu)) * np.array([[ 1-nu, nu, nu, 0, 0, 0 ],
-                                                 [ nu, 1-nu, nu, 0, 0, 0 ],
-                                                 [ nu, nu, 1-nu, 0, 0, 0 ],
-                                                 [0, 0, 0, 0.5-nu, 0, 0 ],
-                                                 [0, 0, 0, 0, 0.5-nu, 0 ],
-                                                 [0, 0, 0, 0, 0, 0.5-nu]   ])
+        #self.C = E/((1+nu)*(1-2*nu)) * np.array([[ 1-nu, nu,   nu,    0,      0,      0     ],
+        #                                         [ nu,   1-nu, nu,    0,      0,      0     ],
+        #                                         [ nu,   nu,   1-nu,  0,      0,      0     ],
+        #                                         [ 0,    0,    0,     0.5-nu, 0,      0     ],
+        #                                         [ 0,    0,    0,     0,      0.5-nu, 0     ],
+        #                                         [ 0,    0,    0,     0,      0,      0.5-nu]])
+        self.material = material
+        self.C = material.StiffnessMatrix3D()
 
     def f_integration_points(self):
         """
@@ -202,12 +224,11 @@ class Node2D(Node):
 class Node3D(Node):
     def __init__(self, r):
         super().__init__(r, ndofs=3)
-# As Node is initialized with argument ndofs, Node2D and Node3D may be unneeded
 
-class Quad4(FiniteElement):
+class Quad4(FiniteElement2D):
     n_integration_points = 2
     plotidx = [0, 1, 2, 3]
-    def __init__(self, r, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
         """
         :param r:  4x2 array of coordinates: [[x1,y1], [x2, y2], .. ]
         
@@ -219,8 +240,6 @@ class Quad4(FiniteElement):
         """
 
         super().__init__(**kwargs)
-
-        self.r = r
         #self.n_integration_points = 2
 
     def shape_functions(self, *args):
@@ -237,27 +256,20 @@ class Quad4(FiniteElement):
 
 class Quad4R(Quad4):
     n_integration_points = 1
-    def __init__(self, r, *args, **kwargs):
-        super().__init__(r, *args, **kwargs)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
-class Quad8(FiniteElement):
+class Quad8(FiniteElement2D):
     n_integration_points = 3
     plotidx = [0, 4, 1, 5, 2, 6, 3, 7]
-    def __init__(self, r, *args, **kwargs):
+    midside_nodes = True
+    def __init__(self, *args, **kwargs):
         """
                 :param r:  8x2 array of coordinates: [[x1,y1], [x2, y2], .. ]
-                If a 4x2 array of coordinates is passed, will linearly interpolate midnodes between vertex nodes
+                If a 4x2 array of coordinates is passed, will interpolate midnodes between vertex nodes
                 Nodes 5, 6, 7, 8 are midside nodes
                 """
         super().__init__(*args, **kwargs)
-
-        self.r = r
-        if self.r.shape == (4,2):
-            self.r = np.array([*r,
-                               (r[0]+r[1])/2,
-                               (r[1]+r[2])/2,
-                               (r[2]+r[3])/2,
-                               (r[3]+r[0])/2])
 
     def shape_functions(self, *args):
         # Nodes 1-4 are corner nodes and 5-8 are midside nodes
@@ -295,15 +307,13 @@ class Quad8(FiniteElement):
 
 class Quad8R(Quad8):
     n_integration_points = 2
-    def __init__(self, r, *args, **kwargs):
-        super().__init__(r, *args, **kwargs)
-
-class Tri3(FiniteElement):
-    def __init__(self, r, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.plotidx = [0,1,2]
-        self.r = r
+class Tri3(FiniteElement2D):
+    plotidx = [0, 1, 2]
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
     def _shape_functions(self, *args):
         xi, eta = args[0:2]
@@ -331,17 +341,11 @@ class Tri3(FiniteElement):
                          xi,
                          1-eta-xi])
 
-class Tri6(FiniteElement):
-    def __init__(self, r, *args, **kwargs):
+class Tri6(FiniteElement2D):
+    plotidx = [0, 3, 1, 4, 2, 5]
+    midside_nodes = True
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
-        self.plotidx = [0,3,1,4,2,5]
-        self.r = r
-        if self.r.shape == (3,2):
-            self.r = np.array([*r,
-                               (r[0] + r[1]) / 2,
-                               (r[1] + r[2]) / 2,
-                               (r[0] + r[2]) / 2])
 
     def shape_functions(self, *args):
         xi, eta = args[0:2]
@@ -359,9 +363,8 @@ class Brick8(FiniteElement3D):
     Abaqus Theory Guide - 3.2.4 Solid isoparametric quadrilaterals and hexahedra
     """
     n_integration_points = 2
-    def __init__(self, r, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.r = r
 
     def shape_functions(self, *args):
         xi, eta, zeta = args[0:3]
@@ -375,6 +378,59 @@ class Brick8(FiniteElement3D):
                                 (1-xi)*(1+eta)*(1+zeta)
                               ])
 
+class Brick20(FiniteElement3D):
+    n_integration_points = 3
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        r = np.array([0])
+        if r.shape[0] == 8: # 8 nodes -> 20 nodes
+            r = 1/2 * np.array([*(2*r),
+                                r[1]+r[5],
+                                r[2]+r[6],
+                                r[3]+r[7],
+                                r[4]+r[8],
+                                r[1]+r[2],
+                                r[2]+r[3],
+                                r[3]+r[4],
+                                r[4]+r[1],
+                                r[5]+r[6],
+                                r[6]+r[7],
+                                r[7]+r[8],
+                                r[8]+r[5]
+                                ])
+
+    def shape_functions(self, *args):
+        xi, eta, zeta = args[0:3]
+        # Shape functions of nodes at vertices
+        sf_vertices = 1/8 * np.array([ (1-xi)*(1-eta)*(1-zeta)*(-xi-eta-zeta-2),
+                                       (1+xi)*(1-eta)*(1-zeta)*(xi-eta-zeta-2),
+                                       (1+xi)*(1+eta)*(1-zeta)*(xi+eta-zeta-2),
+                                       (1-xi)*(1+eta)*(1-zeta)*(-xi+eta-zeta-2),
+                                       (1-xi)*(1-eta)*(1+zeta)*(-xi-eta+zeta-2),
+                                       (1+xi)*(1-eta)*(1+zeta)*(xi-eta+zeta-2),
+                                       (1+xi)*(1+eta)*(1+zeta)*(xi+eta+zeta-2),
+                                       (1-xi)*(1+eta)*(1+zeta)*(-xi+eta+zeta-2)])
+        # Shape functions of nodes in the xi=0, eta=0 and zeta=0 planes
+        sf_xi = 1/4 * np.array([(1-xi**2)*(1-eta)*(1-zeta),
+                                (1-xi**2)*(1+eta)*(1-zeta),
+                                (1-xi**2)*(1-eta)*(1+zeta),
+                                (1-xi**2)*(1+eta)*(1+zeta)])
+        sf_eta = 1/4 * np.array([(1-eta**2)*(1+xi)*(1-zeta),
+                                 (1-eta**2)*(1-xi)*(1-zeta),
+                                 (1-eta**2)*(1+xi)*(1+zeta),
+                                 (1-eta**2)*(1-xi)*(1+zeta)])
+        sf_zeta = 1/4 * np.array([(1-zeta**2)*(1-xi)*(1-eta),
+                                  (1-zeta**2)*(1+xi)*(1-eta),
+                                  (1-zeta**2)*(1+xi)*(1+eta),
+                                  (1-zeta**2)*(1-xi)*(1+eta)])
+        sf = np.empty(20)
+        sf[[1,2,3,4,5,6,7,8]] = sf_vertices
+        sf[[13,15,17,19]] = sf_xi
+        sf[[16,14,18,20]] = sf_eta
+        sf[[9,10,11,12]] = sf_zeta
+        return sf
+
 class Problem:
     def __init__(self, ndofs=2):
         self.nodes = list()
@@ -387,13 +443,18 @@ class Problem:
         self.nodal_coordinates = self.f_nodal_coordinates()
         self.nc_dict = dict()
 
-    def create_element(self, r, etype, E=2e5, nu=0.3, *args, **kwargs):
-        element = etype(r, E, nu, **kwargs)
+    def create_element(self, r, elm_type, material, *args, **kwargs):
+        element = elm_type(material, **kwargs)
+
+        if element.midside_nodes:
+            midsides = (r + np.roll(r, shift=-1, axis=0)) / 2
+            r = np.array([*r,
+                          *midsides])
 
         self.elements.append(element)
         element.number = len(self.elements)
         dofs = list()
-        for point in element.r:
+        for point in r:
             node = self.create_node(point)
             node.elements.append(element)
             element.nodes.append(node)
@@ -466,8 +527,11 @@ class Problem:
     def renumber_dofs(self):
         pass
 
-    # Exclusive to Problem2D - May be moved
-    def mesh_grid(self, x, y, type=Quad4):
+class Problem2D(Problem):
+    def __init__(self):
+        super().__init__(ndofs=2)
+
+    def mesh_grid(self, x, y, material, elm_type=Quad4):
         i = 0
         for x1, x2 in zip(x, x[1:]):
             for y1, y2 in zip(y, y[1:]):
@@ -476,15 +540,31 @@ class Problem:
                               [x2, y1],
                               [x2, y2],
                               [x1, y2]])
-                if cls.__name__[0:4] == 'Quad':
-                    self.create_element(r, etype=cls)
-                elif cls == Tri3 or cls == Tri6:
+                if elm_type.__name__[0:4] == 'Quad':
+                    self.create_element(r, elm_type=elm_type, material=material)
+                elif elm_type.__name__[0:3] == 'Tri':
                     xm, ym = 1/2 * np.array([x1+x2, y1+y2])
                     for (xa,ya),(xb,yb) in zip(r, np.roll(r,1,axis=0)):
                         r = np.array([[xa, ya],
                                       [xb, yb],
                                       [xm, ym]])
-                        self.create_element(r, etype=cls)
+                        self.create_element(r, elm_type=elm_type, material=material)
+
+    def mesh_polygon(self, material, polygon, elm_type=Tri6, elm_size=1):
+        """
+        :param polygon:
+        :return:
+        """
+        if polygon.__class__.__name__ == ('ndarray' or 'MultiPoint' or 'CoordinateSequence'):
+            polygon = shp.Polygon(polygon)
+        multipoint_1 = densify_exterior(polygon.exterior.coords, size=elm_size)
+        multipoint_2 = densify_interior(shp.Polygon(multipoint_1), size=elm_size)
+        triangles = triangulate(multipoint_2)
+        for triangle in triangles:
+            if not triangle.within(polygon):
+                continue
+            xy = np.asarray(triangle.exterior.coords.xy).T[0:-1]
+            self.create_element(xy, elm_type=elm_type, material=material)
 
     def plot_prep(self, ncols=1, **kwargs):
         fig,axs = plt.subplots(ncols=ncols, **kwargs)
@@ -499,11 +579,13 @@ class Problem:
 
         return fig,axs
 
-    def plot_model(self, ax):
+    def plot_model(self, ax=None):
+        if ax is None:
+            fig,ax = plt.subplots()
         for element in self.elements:
             r = element.r[element.plotidx]
-            rect = patches.Polygon(r, linewidth=1, facecolor='white', edgecolor='black')
-            ax.add_patch(rect)
+            poly = patches.Polygon(r, linewidth=1, facecolor='white', edgecolor='black')
+            ax.add_patch(poly)
 
     def plot_displaced(self, ax, scale_factor=1):
         elemental_stress = np.array([element.stress(0, 0)[0] for element in self.elements])
@@ -558,15 +640,11 @@ class Problem:
                                           frames=n_frames, interval=0.001, blit=False)
         plt.show()
 
-class Problem2D(Problem):
-    def __init__(self):
-        super().__init__(ndofs=2)
-
 class Problem3D(Problem):
     def __init__(self):
         super().__init__(ndofs=3)
 
-    def mesh_extrude(self, base, extrude_to, aspect_ratio=1):
+    def mesh_extrude(self, material, base, extrude_to, aspect_ratio=1):
         """
 
         :param base: Nx8 np array: each row are corner coordinates for a 4-sided polygon
@@ -590,7 +668,7 @@ class Problem3D(Problem):
                 zz = np.hstack((np.zeros(4), np.ones(4) * elm_length)).reshape((8,1)) \
                      + elm_length * i
                 r = np.hstack((rr, zz))
-                self.create_element(r, Brick8)
+                self.create_element(r, Brick8, material)
 
     def plot_prep(self, ncols=1, **kwargs):
         fig = plt.figure()
@@ -646,6 +724,48 @@ def R2(theta):
     s, c = np.sin(theta), np.cos(theta)
     return np.array([[c, -s], [s, c]])
 
+def densify_exterior(points, size=1):
+    """
+
+    :param points: Shapely MultiPoint or CoordinateSequence object
+    :param size: Approximate distance between new points
+    :return: Shapely MultiPoint
+    """
+    new_pts = list()
+    for pt1, pt2 in zip(points, points[1:]):
+        r1 = np.asarray(pt1)
+        r2 = np.asarray(pt2)
+
+        d_12 = np.linalg.norm(r2 - r1)
+        n = int(np.round(d_12 / size))
+        size = d_12 / n
+
+        unit_vector = (r2 - r1) / d_12
+
+        for i in range(n):
+            new_pts.append(pt1 + i*size*unit_vector)
+
+    return shp.MultiPoint(np.asarray(new_pts))
+
+def densify_interior(polygon, size=1):
+    """
+    :param polygon:
+    :param min_dist:
+    :return:
+    """
+    xmin, ymin, xmax, ymax = polygon.bounds
+    x = np.linspace(xmin, xmax, num=int(np.round((xmax-xmin)/size)))
+    y = np.linspace(ymin, ymax, num=int(np.round((ymax-ymin)/size)))
+    grid = np.asarray(np.meshgrid(x, y))
+    new_pts = list()
+    for i,j in itertools.product(range(grid.shape[1]), range(grid.shape[2])):
+        pt = shp.Point(*grid[:,i,j])
+        if polygon.contains(pt) and  polygon.exterior.distance(pt) >= size:
+            new_pts.append(grid[:,i,j])
+    for xy in polygon.exterior.coords:
+        new_pts.append(np.array(xy))
+    return shp.MultiPoint(np.asarray(new_pts))
+
 def subdivide_quadrilateral(rr):
     """
 
@@ -669,11 +789,12 @@ def subdivide_quadrilateral(rr):
 
 sq = subdivide_quadrilateral
 
-
-
 if __name__ == '__main__':
 
-    lc=1
+    steelProperties = {'E1':210000, 'v12':0.3, 'a1':16e-6}
+    steel = MaterialIsotropic(steelProperties)
+
+    lc=6
 
     if lc == 1:
         start_time = time.time()
@@ -682,13 +803,12 @@ if __name__ == '__main__':
                       [10,10],
                       [0,10]])
 
-
-        p = Problem()
+        p = Problem2D()
         n = 8
         x = 10*np.linspace(0,10, 5*n+1)
         y = 10*np.linspace(0,2, 12)
-        cls = Quad8
-        p.mesh_grid(x, y, type=cls)
+        cls = Tri6
+        p.mesh_grid(x, y, elm_type=cls)
         mid_time = time.time()
         p.load_node((100,0), (0,10000))
         p.load_node((100,20), (0,10000))
@@ -702,8 +822,6 @@ if __name__ == '__main__':
         print(q.displacements())
         end_time = time.time()
 
-        q8 = Quad8(r1)
-        q4 = Quad4(r1)
         #e1 = p.nodeobj_at((80, 10)).elements[0]
         #e2 = p.nodeobj_at((10, 20)).elements[0]
         #e3 = p.nodeobj_at((10, 0)).elements[0]
@@ -717,17 +835,15 @@ if __name__ == '__main__':
         #p.plot_both(save=False, filename=filename)
         #p.plot_functions(p.plot_model, p.plot_displaced)
         #p.plot()
-
-
     if lc == 2:
         for n in (2,3,4,5):
-            p = Problem()
+            p = Problem2D()
             #n = 5
             x = 10 * np.linspace(0, 10, 5*n+1)
             y = 10 * np.linspace(0, 2, n+1)
 
             cls = Tri3
-            p.mesh_grid(x, y, type=cls)
+            p.mesh_grid(x, y, elm_type=cls)
             p.load_node((100,0),(0,5000))
             for _y in y:
                 p.pin(p.nodeobj_at((0,_y)))
@@ -739,13 +855,13 @@ if __name__ == '__main__':
             print('n = ', n)
             print(tri.displacements())
             filename = '{}_{}_.png'.format(cls.__name__, n)
-            p.plot_displaced(save=1, filename=filename)
+            p.plot_displaced(save=0, filename=filename)
             #plt.show()
     if lc == 3:
-        p = Problem()
+        p = Problem2D()
         x = np.array([0, 10])
         y = np.array([0, 10])
-        p.mesh_grid(x, y, type=Quad8)
+        p.mesh_grid(x, y, elm_type=Quad8)
 
         q8 = p.elements[0]
         p.pin(p.nodeobj_at((0,0)))
@@ -767,8 +883,7 @@ if __name__ == '__main__':
                        [10, 10],
                        [0, 10]]) @ R.T
 
-
-        p.create_element(r1, etype=cls)
+        p.create_element(r1, elm_type=cls, material=steel)
 
         p.load_node(R@np.array([10,10]), R@np.array([10000,0]))
         #p.pin(p.nodeobj_at((0,1)))
@@ -791,14 +906,14 @@ if __name__ == '__main__':
                        [0, 10, 10]])
 
         p = Problem3D()
-        p.create_element(r1, etype=Brick8)
+        p.create_element(r1, elm_type=Brick8, material=steel)
         b = p.elements[0]
         K = p.stiffness_matrix()
     if lc == 6:
         p = Problem3D()
         r0 = np.array([[0,0],[10,0],[10,10],[0,10]])
         r0base = subdivide_quadrilateral(r0)
-        p.mesh_extrude(base=r0base, extrude_to=200, aspect_ratio=1)
+        p.mesh_extrude(steel, base=r0base, extrude_to=200, aspect_ratio=1)
         for r in r0:
             p.pin(p.nodeobj_at(np.array([*r, 0])))
         for r in p.f_nodal_coordinates()[-4:]:
@@ -812,9 +927,22 @@ if __name__ == '__main__':
         (2x2)xN elements: 14.4mm
         """
 
-    p.plot_functions(p.plot_displaced)
+        p.plot_displaced_as_points()
+    if lc == 7:
+        p = Problem2D()
+        ext_pts = np.array([[0,0],
+                            [10,0],
+                            [10,10],
+                            [9, 10],
+                            [9, 1],
+                            [0, 1],
+                            [0, 0]])
+        poly = shp.Polygon(ext_pts)
+        p.mesh_polygon(poly, elm_type=Tri6, elm_size=0.2)
+        e = p.elements[-1]
+        p.pin(p.nodeobj_at((0,0)))
+        p.pin(p.nodeobj_at((0,1)))
+        p.load_node((10,10), (1000,0))
+        p.solve()
+
     plt.show()
-
-
-
-
